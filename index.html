@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8"/>
+<title>Generador de Mantenimientos — UT</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI',Arial,sans-serif;background:#EDF1F7;color:#111;padding:20px;font-size:13px}
+.card{background:#fff;border-radius:8px;padding:18px 22px;margin-bottom:12px;box-shadow:0 1px 5px rgba(0,0,0,.08)}
+h1{font-size:15px;color:#1F3864;font-weight:700;margin-bottom:3px}
+.sub{font-size:11px;color:#666;margin-bottom:12px}
+.drop-zone{border:2px dashed #B0BCD4;border-radius:6px;padding:20px;text-align:center;cursor:pointer;transition:all .2s;background:#F8FAFD;margin-bottom:10px}
+.drop-zone:hover,.drop-zone.over{border-color:#1F3864;background:#EEF3FA}
+.drop-zone .icon{font-size:24px;margin-bottom:4px}
+.drop-zone p{font-size:12px;color:#555}.drop-zone strong{color:#1F3864}
+#file-input{display:none}
+label.lbl{font-size:11px;font-weight:600;color:#444;display:block;margin-bottom:4px}
+textarea{width:100%;height:80px;font-size:11px;border:1px solid #C8D3E0;border-radius:4px;padding:7px 10px;resize:vertical;font-family:monospace;color:#222;background:#FAFBFD}
+textarea:focus{outline:none;border-color:#1F3864}
+.btns{display:flex;gap:10px;margin-top:10px;flex-wrap:wrap}
+button{border:none;cursor:pointer;font-weight:700;font-size:12px;padding:8px 18px;border-radius:5px;transition:background .15s}
+.btn-p{background:#1F3864;color:#fff}.btn-p:hover{background:#163060}.btn-p:disabled{background:#A0ABBE;cursor:not-allowed}
+.btn-e{background:#C0392B;color:#fff}.btn-e:hover{background:#A93226}.btn-e:disabled{background:#C7A09A;cursor:not-allowed}
+.status{font-size:11px;color:#444;margin-top:8px;min-height:16px}
+.ok{color:#1A7A3C}.err{color:#C0392B}
+#canvas-wrap{overflow-x:auto;background:#f0f0f0;padding:8px;border-radius:4px;min-height:40px}
+canvas{display:block;border:1px solid #ddd}
+</style>
+</head>
+<body>
+
+<div class="card">
+  <h1>📋 Generador de Mantenimientos — Fin de Semana</h1>
+  <p class="sub">Arrastra o selecciona el Excel. Notas y zonas van en el campo de texto.</p>
+  <div class="drop-zone" id="drop-zone" onclick="document.getElementById('file-input').click()">
+    <div class="icon">📂</div>
+    <p><strong>Arrastra el Excel aquí</strong> o haz clic para seleccionar</p>
+    <p style="margin-top:3px;font-size:10px;color:#999">Cuadro_de_Mantenimientos.xlsx</p>
+  </div>
+  <input type="file" id="file-input" accept=".xlsx,.xls"/>
+  <label class="lbl">Notas y zonas afectadas (pega el texto del correo):</label>
+  <textarea id="notas-input" placeholder="• Unidades que continúan indisponibles...&#10;MANTENIMIENTO SANA ANA:&#10;DEPARTAMENTO: SANTA ANA..."></textarea>
+  <div class="btns">
+    <button class="btn-p" id="btn-gen" onclick="generar()" disabled>🔄 Generar</button>
+    <button class="btn-e" id="btn-exp" onclick="exportar()" disabled>📸 Exportar PNG</button>
+  </div>
+  <div class="status" id="status">Carga el Excel para comenzar.</div>
+</div>
+
+<div class="card" style="padding:10px 14px">
+  <div id="canvas-wrap">
+    <canvas id="cv"></canvas>
+  </div>
+</div>
+
+<script>
+// ── COLORES ──────────────────────────────────────────────────────────────────
+const CLR = {
+  azul:'#1F3864', azulMed:'#2E5090', rojo:'#C0392B',
+  white:'#FFFFFF', grisBg:'#F4F6FB', grisBrd:'#CCCCCC',
+  black:'#111111', rojoTxt:'#C0392B'
+};
+
+// ── LAYOUT ───────────────────────────────────────────────────────────────────
+const CW   = 980;   // canvas width
+const PAD  = 16;    // left/right padding
+// cols must sum to CW - PAD*2 = 948
+const COLS = [150, 68, 118, 612];
+
+const DEF_COLS = {
+  'LÍNEAS':  ['Línea',            'PM Solicitante','Horario','Descripción'],
+  'LINEAS':  ['Línea',            'PM Solicitante','Horario','Descripción'],
+  'UNIDADES':['Unidad Generadora','PM Solicitante','Horario','Descripción'],
+  'PRUEBAS': ['Unidad Generadora','PM Solicitante','Horario','Contexto'],
+  'EQUIPOS': ['Equipo',           'PM Solicitante','Horario','Descripción'],
+};
+
+// ── FILE LOAD ────────────────────────────────────────────────────────────────
+let WB = null;
+const dropZone = document.getElementById('drop-zone');
+
+dropZone.addEventListener('dragover', e=>{e.preventDefault();dropZone.classList.add('over')});
+dropZone.addEventListener('dragleave', ()=>dropZone.classList.remove('over'));
+dropZone.addEventListener('drop', e=>{
+  e.preventDefault(); dropZone.classList.remove('over');
+  if(e.dataTransfer.files[0]) loadFile(e.dataTransfer.files[0]);
+});
+document.getElementById('file-input').addEventListener('change', e=>{
+  if(e.target.files[0]) loadFile(e.target.files[0]);
+});
+
+function loadFile(file){
+  setStatus('Cargando '+file.name+'…');
+  const r = new FileReader();
+  r.onload = ev => {
+    try{
+      WB = XLSX.read(new Uint8Array(ev.target.result), {type:'array'});
+      dropZone.innerHTML = '<div class="icon">✅</div><p><strong>'+file.name+'</strong> cargado</p>';
+      document.getElementById('btn-gen').disabled = false;
+      setStatus('Listo. Presiona "Generar".','ok');
+    } catch(err){ setStatus('Error al leer: '+err.message,'err'); }
+  };
+  r.readAsArrayBuffer(file);
+}
+
+// ── PARSER ───────────────────────────────────────────────────────────────────
+const DAY_W = ['SÁBADO','SABADO','DOMINGO','LUNES','MARTES','MIÉRCOLES','MIERCOLES','JUEVES','VIERNES'];
+const SEC_N = ['LÍNEAS','LINEAS','UNIDADES','EQUIPOS','PRUEBAS'];
+const HDR_K = ['equipo','línea','linea','unidad','pm ','horario','descripci','contexto','tipo de'];
+
+function cv(cell){ return (!cell||cell.v==null)?'':String(cell.v).replace(/\n/g,' ').trim(); }
+function isDay(v){ const u=v.toUpperCase(); return DAY_W.some(d=>u.startsWith(d)); }
+function isSec(v){ return SEC_N.includes(v.toUpperCase().trim()); }
+function isHdr(v){ const l=v.toLowerCase(); return HDR_K.some(k=>l.startsWith(k)); }
+
+function parseWB(workbook){
+  const ws    = workbook.Sheets[workbook.SheetNames[0]];
+  if(!ws['!ref']) return [];
+  const range = XLSX.utils.decode_range(ws['!ref']);
+  const dias  = []; let curDay=null, curSec=null;
+
+  for(let r=range.s.r; r<=range.e.r; r++){
+    const cells=[];
+    for(let c=range.s.c; c<=Math.min(range.s.c+3,range.e.c); c++)
+      cells.push(cv(ws[XLSX.utils.encode_cell({r,c})]));
+    while(cells.length<4) cells.push('');
+
+    const filled = cells.filter(v=>v!=='');
+    if(!filled.length) continue;
+    const first = cells[0];
+
+    if(filled.length===1 && isDay(first)){
+      if(curSec&&curSec.filas.length&&curDay) curDay.secciones.push(curSec);
+      if(curDay) dias.push(curDay);
+      curDay={nombre:first,secciones:[]}; curSec=null;
+    } else if(filled.length===1 && isSec(first)){
+      if(curSec&&curSec.filas.length&&curDay) curDay.secciones.push(curSec);
+      curSec={tipo:first.toUpperCase().trim(),cols:[],filas:[]};
+    } else if(filled.length>=3 && isHdr(first) && curSec){
+      if(!curSec.cols.length) curSec.cols=[...cells];
+    } else if(filled.length>=1 && curSec && !isHdr(first) && !isSec(first) && !isDay(first)){
+      curSec.filas.push([...cells]);
+    }
+  }
+  if(curSec&&curSec.filas.length&&curDay) curDay.secciones.push(curSec);
+  if(curDay) dias.push(curDay);
+  return dias;
+}
+
+function parseNotas(text){
+  const notas=[], zonas=[];
+  text.split('\n').map(l=>l.trim()).filter(Boolean).forEach(line=>{
+    const u=line.toUpperCase();
+    if(u.startsWith('DEPARTAMENTO')||u.startsWith('MANTENIMIENTO')||u.startsWith('MUNICIPIO'))
+      zonas.push(line);
+    else notas.push(line.replace(/^[•\-\*]\s*/,''));
+  });
+  return {notas,zonas};
+}
+
+// ── CANVAS DRAW UTILS ────────────────────────────────────────────────────────
+function wrapText(ctx, text, maxW){
+  const words = String(text).split(' ').filter(w=>w.length>0);
+  if(!words.length) return [''];
+  const lines=[]; let cur='';
+  for(const w of words){
+    const test = cur ? cur+' '+w : w;
+    if(ctx.measureText(test).width <= maxW) cur=test;
+    else{ if(cur) lines.push(cur); cur=w; }
+  }
+  if(cur) lines.push(cur);
+  return lines.length ? lines : [''];
+}
+
+// Returns height needed for a cell
+function cellH(ctx, text, colW, fontSize, bold, pv=3){
+  ctx.font = (bold?'bold ':'')+fontSize+'px Arial';
+  const lines = wrapText(ctx, text, colW - 10);
+  return lines.length * (fontSize+3) + pv*2;
+}
+
+// Draw filled rect
+function fillRect(ctx, x, y, w, h, color){
+  ctx.fillStyle=color; ctx.fillRect(x,y,w,h);
+}
+
+// Draw rect border
+function strokeRect(ctx, x, y, w, h, color){
+  ctx.strokeStyle=color; ctx.lineWidth=0.5;
+  ctx.strokeRect(x+0.25,y+0.25,w-0.5,h-0.5);
+}
+
+// Draw text wrapped inside cell, returns nothing (draws in place)
+function drawCell(ctx, text, x, y, w, h, fontSize, bold, color, pv=3, ph=5){
+  ctx.font = (bold?'bold ':'')+fontSize+'px Arial';
+  ctx.fillStyle = color;
+  const lh    = fontSize + 3;
+  const lines = wrapText(ctx, text, w - ph*2);
+  let ty = y + pv;
+  for(const line of lines){
+    ctx.fillText(line, x+ph, ty+fontSize);
+    ty += lh;
+  }
+}
+
+function getColHeaders(sec){
+  const f = sec.cols.filter(Boolean);
+  return f.length>=3 ? sec.cols : (DEF_COLS[sec.tipo]||['Item','PM','Horario','Descripción']);
+}
+
+// ── MAIN RENDER ──────────────────────────────────────────────────────────────
+function renderCanvas(dias){
+  const canvas = document.getElementById('cv');
+
+  // ── PASS 1: measure height using offscreen ctx ──
+  const off = document.createElement('canvas');
+  off.width=CW; off.height=100;
+  const mctx = off.getContext('2d');
+
+  function measureAll(){
+    let y = PAD;
+    y += 26 + 14; // title bar
+
+    for(const dia of dias){
+      y += 11 + 9; // day label row
+
+      for(const sec of dia.secciones){
+        const cols = getColHeaders(sec);
+        y += 20; // section header
+
+        // col header row
+        let rh=20;
+        for(let i=0;i<4;i++) rh=Math.max(rh, cellH(mctx, cols[i]||'', COLS[i], 10, true, 3));
+        y += rh;
+
+        // data rows
+        for(const fila of sec.filas){
+          let rh2=18;
+          for(let i=0;i<4;i++) rh2=Math.max(rh2, cellH(mctx, fila[i]||'', COLS[i], 12, false, 3));
+          y += rh2;
+        }
+        y += 6;
+      }
+
+      // notas
+      mctx.font='12px Arial';
+      for(const n of (dia._notas||[])){
+        const ls=wrapText(mctx,'• '+n, CW-PAD*2-8);
+        y += ls.length*13 + 2;
+      }
+      for(const z of (dia._zonas||[])){
+        const ls=wrapText(mctx, z, CW-PAD*2-8);
+        y += ls.length*13 + 2;
+      }
+      if((dia._notas||[]).length||(dia._zonas||[]).length) y+=6;
+      y += 10;
+    }
+    return y + PAD;
+  }
+
+  const totalH = measureAll();
+
+  // ── PASS 2: draw ──
+  canvas.width  = CW;
+  canvas.height = totalH;
+  const ctx = canvas.getContext('2d');
+
+  // background
+  fillRect(ctx, 0, 0, CW, totalH, '#FFFFFF');
+
+  let y = PAD;
+  const totalColW = COLS.reduce((a,b)=>a+b,0); // 948
+
+  // Title bar
+  fillRect(ctx, PAD, y, totalColW, 26, CLR.azul);
+  ctx.font="bold 13px Arial";
+  ctx.fillStyle=CLR.white;
+  ctx.fillText('MANTENIMIENTOS FIN DE SEMANA — '+dias.map(d=>d.nombre).join(' y '), PAD+10, y+17);
+  y += 26+14;
+
+  for(const dia of dias){
+    // Day label + underline
+    ctx.font="bold 12px Arial";
+    ctx.fillStyle=CLR.azul;
+    ctx.fillText(dia.nombre, PAD, y+10);
+    ctx.strokeStyle=CLR.azul; ctx.lineWidth=1.5;
+    ctx.beginPath(); ctx.moveTo(PAD,y+13); ctx.lineTo(PAD+totalColW,y+13); ctx.stroke();
+    y += 11+9;
+
+    for(const sec of dia.secciones){
+      const cols    = getColHeaders(sec);
+      const isLinea = sec.tipo.includes('LÍNEA')||sec.tipo.includes('LINEA');
+      const secClr  = isLinea ? CLR.azul : CLR.rojo;
+
+      // ── Section header ──
+      fillRect(ctx, PAD, y, totalColW, 20, secClr);
+      ctx.font="bold 11px Arial";
+      ctx.fillStyle=CLR.white;
+      const sw = ctx.measureText(sec.tipo).width;
+      ctx.fillText(sec.tipo, PAD+(totalColW-sw)/2, y+13);
+      y += 20;
+
+      // ── Col headers ──
+      let rh=20;
+      for(let i=0;i<4;i++) rh=Math.max(rh, cellH(ctx, cols[i]||'', COLS[i], 10, true, 3));
+      let x=PAD;
+      for(let i=0;i<4;i++){
+        fillRect(ctx,  x, y, COLS[i], rh, CLR.azulMed);
+        strokeRect(ctx, x, y, COLS[i], rh, CLR.azulMed);
+        drawCell(ctx, cols[i]||'', x, y, COLS[i], rh, 10, true, CLR.white, 3);
+        x += COLS[i];
+      }
+      y += rh;
+
+      // ── Data rows ──
+      sec.filas.forEach((fila,ri)=>{
+        let rh2=18;
+        for(let i=0;i<4;i++) rh2=Math.max(rh2, cellH(ctx, fila[i]||'', COLS[i], 12, false, 3));
+        const bg = ri%2===0 ? CLR.grisBg : CLR.white;
+        x=PAD;
+        for(let i=0;i<4;i++){
+          fillRect(ctx,   x, y, COLS[i], rh2, bg);
+          strokeRect(ctx, x, y, COLS[i], rh2, CLR.grisBrd);
+          drawCell(ctx, fila[i]||'', x, y, COLS[i], rh2, 12, false, CLR.black, 3);
+          x += COLS[i];
+        }
+        y += rh2;
+      });
+      y += 6;
+    }
+
+    // ── Notas ──
+    const _n=dia._notas||[], _z=dia._zonas||[];
+    ctx.font='12px Arial';
+    for(const n of _n){
+      const ls=wrapText(ctx,'• '+n,CW-PAD*2-8);
+      for(const l of ls){ ctx.fillStyle=CLR.black; ctx.fillText(l,PAD,y+10); y+=15; }
+      y+=2;
+    }
+    for(const z of _z){
+      const ls=wrapText(ctx,z,CW-PAD*2-8);
+      for(const l of ls){ ctx.fillStyle=CLR.rojoTxt; ctx.fillText(l,PAD,y+10); y+=15; }
+      y+=2;
+    }
+    if(_n.length||_z.length) y+=6;
+    y+=10;
+  }
+}
+
+// ── ACTIONS ──────────────────────────────────────────────────────────────────
+function generar(){
+  if(!WB){ setStatus('Carga un archivo primero.','err'); return; }
+  try{
+    const dias = parseWB(WB);
+    if(!dias.length){ setStatus('No se detectaron días. Verifica el Excel.','err'); return; }
+    const {notas,zonas} = parseNotas(document.getElementById('notas-input').value);
+    if(dias.length){ dias[dias.length-1]._notas=notas; dias[dias.length-1]._zonas=zonas; }
+    renderCanvas(dias);
+    document.getElementById('btn-exp').disabled=false;
+    setStatus('✅ Generado. Revisa y exporta.','ok');
+  } catch(e){
+    setStatus('❌ '+e.message,'err');
+    console.error(e);
+  }
+}
+
+function exportar(){
+  const src = document.getElementById('cv');
+  if(!src.width||!src.height){ setStatus('Genera primero.','err'); return; }
+  const scale=2;
+  const out=document.createElement('canvas');
+  out.width=src.width*scale; out.height=src.height*scale;
+  const ctx=out.getContext('2d');
+  ctx.scale(scale,scale);
+  ctx.drawImage(src,0,0);
+  const a=document.createElement('a');
+  a.download='mantenimientos_fds.png';
+  a.href=out.toDataURL('image/png',1.0);
+  a.click();
+  setStatus('✅ PNG exportado 2× — listo para WhatsApp.','ok');
+}
+
+function setStatus(msg,type){
+  const el=document.getElementById('status');
+  el.textContent=msg; el.className='status'+(type?' '+type:'');
+}
+</script>
+</body>
+</html>
