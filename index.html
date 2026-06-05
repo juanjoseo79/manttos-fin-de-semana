@@ -66,7 +66,8 @@ const CLR = {
 const CW   = 980;   // canvas width
 const PAD  = 16;    // left/right padding
 // cols must sum to CW - PAD*2 = 948
-const COLS = [150, 68, 118, 612];
+const SCALE = 3;          // render interno a 3× para nitidez
+const COLS = [120, 68, 118, 642];
 
 const DEF_COLS = {
   'LÍNEAS':  ['Línea',            'PM Solicitante','Horario','Descripción'],
@@ -262,9 +263,13 @@ function renderCanvas(dias){
   const totalH = measureAll();
 
   // ── PASS 2: draw ──
-  canvas.width  = CW;
-  canvas.height = totalH;
+  // Escalar canvas a SCALE× para nitidez
+  canvas.width  = CW * SCALE;
+  canvas.height = totalH * SCALE;
+  canvas.style.width  = CW + 'px';
+  canvas.style.height = totalH + 'px';
   const ctx = canvas.getContext('2d');
+  ctx.scale(SCALE, SCALE);
 
   // background
   fillRect(ctx, 0, 0, CW, totalH, '#FFFFFF');
@@ -368,17 +373,12 @@ function generar(){
 function exportar(){
   const src = document.getElementById('cv');
   if(!src.width||!src.height){ setStatus('Genera primero.','err'); return; }
-  const scale=2;
-  const out=document.createElement('canvas');
-  out.width=src.width*scale; out.height=src.height*scale;
-  const ctx=out.getContext('2d');
-  ctx.scale(scale,scale);
-  ctx.drawImage(src,0,0);
+  // El canvas ya está renderizado a 3× internamente — exportar directo
   const a=document.createElement('a');
   a.download='mantenimientos_fds.png';
-  a.href=out.toDataURL('image/png',1.0);
+  a.href=src.toDataURL('image/png',1.0);
   a.click();
-  setStatus('✅ PNG exportado 2× — listo para WhatsApp.','ok');
+  setStatus('✅ PNG exportado a 3× — listo para WhatsApp.','ok');
 }
 
 function setStatus(msg,type){
